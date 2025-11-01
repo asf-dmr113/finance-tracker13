@@ -15,7 +15,63 @@ document.addEventListener('DOMContentLoaded', function() {
     if (form) {
         form.addEventListener('submit', handleFormSubmit);
     }
+    
+    // Setup currency conversion preview
+    const currencySelect = document.getElementById('currency');
+    const amountInput = document.getElementById('amount');
+    const dateInputForConversion = document.getElementById('date');
+    
+    if (currencySelect && amountInput) {
+        currencySelect.addEventListener('change', updateConversionPreview);
+        amountInput.addEventListener('input', updateConversionPreview);
+        if (dateInputForConversion) {
+            dateInputForConversion.addEventListener('change', updateConversionPreview);
+        }
+    }
 });
+
+// Update conversion preview
+let conversionTimeout;
+async function updateConversionPreview() {
+    clearTimeout(conversionTimeout);
+    
+    const currencySelect = document.getElementById('currency');
+    const amountInput = document.getElementById('amount');
+    const dateInput = document.getElementById('date');
+    const previewDiv = document.getElementById('conversion-preview');
+    const previewText = document.getElementById('conversion-text');
+    
+    if (!currencySelect || !amountInput || !previewDiv || !previewText) return;
+    
+    const currency = currencySelect.value;
+    const amount = parseFloat(amountInput.value);
+    const date = dateInput ? dateInput.value : new Date().toISOString().split('T')[0];
+    
+    // Don't show preview if amount is empty, zero, or currency is IDR
+    if (!amount || amount <= 0 || currency === 'IDR') {
+        previewDiv.style.display = 'none';
+        return;
+    }
+    
+    // Debounce the API call
+    conversionTimeout = setTimeout(async () => {
+        try {
+            const response = await fetch(`/api/exchange-rate?from=${currency}&to=IDR&date=${date}`);
+            const data = await response.json();
+            
+            if (data.success && data.rate) {
+                const convertedAmount = amount * data.rate;
+                previewText.textContent = `≈ ${formatCurrency(convertedAmount)} (Rate: 1 ${currency} = ${formatCurrency(data.rate)})`;
+                previewDiv.style.display = 'block';
+            } else {
+                previewDiv.style.display = 'none';
+            }
+        } catch (error) {
+            console.error('Error fetching exchange rate:', error);
+            previewDiv.style.display = 'none';
+        }
+    }, 500); // Wait 500ms after user stops typing
+}
 
 // Handle form submission
 async function handleFormSubmit(e) {
@@ -25,6 +81,7 @@ async function handleFormSubmit(e) {
     const transactionData = {
         description: formData.get('description'),
         amount: parseFloat(formData.get('amount')),
+        currency: formData.get('currency'),
         transaction_type: formData.get('transaction_type'),
         date: formData.get('date'),
         category: formData.get('category') || ''
@@ -75,23 +132,32 @@ async function loadTransactions() {
             return;
         }
         
-        transactionsList.innerHTML = transactions.map(transaction => `
+        transactionsList.innerHTML = transactions.map(transaction => {
+            const originalCurrency = transaction.original_currency || 'IDR';
+            const originalAmount = transaction.original_amount;
+            const showOriginal = originalCurrency !== 'IDR' && originalAmount;
+            
+            return `
             <div class="transaction-item ${transaction.transaction_type}">
                 <div class="transaction-info">
                     <h4>${escapeHtml(transaction.description)}</h4>
                     <div class="transaction-meta">
                         <span>${formatDate(transaction.date)}</span>
                         ${transaction.category ? `<span>${escapeHtml(transaction.category)}</span>` : ''}
+                        ${showOriginal ? `<span style="font-size: 0.85em; color: #888;">
+                            (${originalAmount.toLocaleString('id-ID')} ${originalCurrency} @ ${transaction.exchange_rate ? transaction.exchange_rate.toFixed(4) : 'N/A'})
+                        </span>` : ''}
                     </div>
                 </div>
                 <div style="display: flex; align-items: center; gap: 10px;">
                     <span class="transaction-amount">
-                        ${transaction.transaction_type === 'income' ? '+' : '-'}$${transaction.amount.toFixed(2)}
+                        ${transaction.transaction_type === 'income' ? '+' : '-'}${formatCurrency(transaction.amount)}
                     </span>
                     <button class="btn btn-danger" onclick="deleteTransaction(${transaction.id})">Delete</button>
                 </div>
             </div>
-        `).join('');
+        `;
+        }).join('');
     } catch (error) {
         console.error('Error loading transactions:', error);
     }
@@ -108,13 +174,13 @@ async function loadSummary() {
         const balanceEl = document.getElementById('balance');
         
         if (totalIncomeEl) {
-            totalIncomeEl.textContent = `$${summary.total_income.toFixed(2)}`;
+            totalIncomeEl.textContent = formatCurrency(summary.total_income);
         }
         if (totalExpenseEl) {
-            totalExpenseEl.textContent = `$${summary.total_expense.toFixed(2)}`;
+            totalExpenseEl.textContent = formatCurrency(summary.total_expense);
         }
         if (balanceEl) {
-            balanceEl.textContent = `$${summary.balance.toFixed(2)}`;
+            balanceEl.textContent = formatCurrency(summary.balance);
             // Change color based on balance
             if (summary.balance < 0) {
                 balanceEl.style.color = '#dc3545';
@@ -158,6 +224,13 @@ function formatDate(dateString) {
         month: 'short', 
         day: 'numeric' 
     });
+}
+
+function formatCurrency(amount) {
+    // Format as Indonesian Rupiah (IDR)
+    // IDR typically doesn't use decimal places
+    const formattedAmount = Math.round(amount).toLocaleString('id-ID');
+    return `Rp ${formattedAmount}`;
 }
 
 function escapeHtml(text) {
